@@ -1,0 +1,34 @@
+ID	LocationTypeName
+1	Canal Drainage
+2	Canal Irrigation
+3	Canal Transport
+4	Channelized Stream
+5	Combined Sewer
+6	Constructed Wetland
+7	Estuary
+8	Facility Industrial
+9	Facility Municipal Sewage (POTW)
+10	Facility Other
+11	Facility Privately Owned Non-industrial
+12	Facility Public Water Supply (PWS)
+13	Lake
+14	Land
+15	Land Flood Plain
+16	Land Runoff
+17	Other-Ground Water
+18	Other-Surface Water
+19	Pipe, Unspecified Source
+20	Pond-Stormwater
+21	Reservoir
+22	River/Stream
+23	River/Stream Intermittent
+24	River/Stream Perennial
+25	Riverine Impoundment
+26	Seep
+27	Storm Sewer
+28	Waste Pit
+29	Waste Sewer
+30	Well
+31	Stormwater Manhole
+32	Fecal Matter
+33	Sand
