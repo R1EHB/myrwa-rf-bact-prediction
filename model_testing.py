@@ -298,7 +298,7 @@ for standard in standard_limits:
 
 	## ROC curve
 	model_scores_pr = {'Baseline\n(Majority rule classifier)':([0,1],[0,1]), 
-					'Logistic Regression':auc_calc(clf_lr)[1:], 
+					'Logistic Regression':auc_calc(clf_lr, xtest=ss_X.transform(X_test))[1:], 
 					'Logistic Regression\n(w/ interactions)':auc_calc(clf_lri, xtest=pf_int.transform(ss_X.transform(X_test)))[1:], 
 					'Decision Tree':auc_calc(clf_dt)[1:], 
 					'Gradient Boosting':auc_calc(clf_gbm)[1:] 
@@ -331,7 +331,7 @@ for standard in standard_limits:
 		plt.yticks(np.arange(len(ao)), coefs[model].index[ao])
 		plt.xlabel(coefs[model].name.capitalize()+' value')
 		plt.title(model)
-		plt.savefig('test_'+standard+'_'+model.replace(' ','').replace(r'\n','').replace('/','')+'_coef.png', bbox_inches='tight')
+		plt.savefig('test_'+standard+'_'+model.replace(' ','').replace('\n','').replace('/','').replace('(','').replace(')','')+'_coef.png', bbox_inches='tight')
 
 
 
