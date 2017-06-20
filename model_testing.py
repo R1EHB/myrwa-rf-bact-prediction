@@ -122,12 +122,12 @@ def sum_rain(timestamp, hours=[36,48], rain_series = d_logan['prcp_in']):
 
 precip_ts = [0,12,24,48,72,96,120]
 for i in range(len(precip_ts)-1):
-	d_rf_bact['precip_'+str(precip_ts[0])+'_'+str(precip_ts[1])] = d_rf_bact.DateHour.apply(lambda x: sum_rain(x, hours=[precip_ts[i], precip_ts[i+1]]))
+	d_rf_bact['precip_'+str(precip_ts[i])+'_'+str(precip_ts[i+1])] = d_rf_bact.DateHour.apply(lambda x: sum_rain(x, hours=[precip_ts[i], precip_ts[i+1]]))
 
 ## Gather variables
 IVs = [
 	'flow_alewife_current', 'flow_alewife_deriv','flow_aberjona_current','flow_aberjona_deriv',
-	] + list(col_cat_dummies) + ['precip_'+str(t) for t in precip_ts]
+	] + list(col_cat_dummies) + ['precip_'+str(precip_ts[i])+'_'+str(precip_ts[i+1]) for i in range(len(precip_ts)-1)]
 DV = 'ResultValue'
 IVs = [iv for iv in IVs if iv in d_rf_bact] # some columns came from other dataframes - eliminate them
 IVs = [iv for iv in IVs if iv.startswith('Qualifier')==0] # does not make causal sense to include the bacterial results qualifier
