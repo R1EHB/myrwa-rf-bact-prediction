@@ -133,6 +133,24 @@ IVs = [iv for iv in IVs if iv in d_rf_bact] # some columns came from other dataf
 IVs = [iv for iv in IVs if iv.startswith('Qualifier')==0] # does not make causal sense to include the bacterial results qualifier
 
 
+## Generate flow and rainfall data for all of 2016 for testing purposes
+hrs_2016 = pd.date_range(pd.Timestamp('2016-01-01 00:00:00'), pd.Timestamp('2016-12-31 00:00:00'), freq=pd.Timedelta(4, 'h'))
+df_2016 = pd.DataFrame(data = {'DateHour':hrs_2016.values})
+## Load hourly flow data
+df_2016['flow_alewife_current'] = flow_dfs['h_alewife']['168619_00060'].ix[hrs_2016].values
+df_2016['flow_alewife_deriv'] = flow_dfs['h_alewife']['flow_deriv'].ix[hrs_2016].values
+## Missing some values, so interpolate
+df_2016['flow_alewife_current'].interpolate('linear', inplace=True)
+df_2016['flow_alewife_current'].fillna(0, inplace=True) # still end up with some nans after interpolation - not sure why, but should be ok to fill with 0s for testing purposes
+df_2016['flow_alewife_deriv'].interpolate('linear', inplace=True)
+df_2016['flow_aberjona_current'] = flow_dfs['h_aberjona']['64138_00060_00003'].ix[hrs_2016].values
+df_2016['flow_aberjona_deriv'] = flow_dfs['h_aberjona']['flow_deriv'].ix[hrs_2016].values
+## Calculate hourly precipitation
+for i in range(len(precip_ts)-1):
+	df_2016['precip_'+str(precip_ts[i])+'_'+str(precip_ts[i+1])] = \
+		df_2016['DateHour'].apply(lambda x: sum_rain(x, hours=[precip_ts[i], precip_ts[i+1]]))
+
+
 standard_limits = {
 	'boating':{'ECOLI':1260,'ENT':350},
 	'swimming':{'ECOLI':235,'ENT':104},
@@ -254,10 +272,74 @@ for standard in standard_limits:
 	print clf_lri.score(pf_int.transform(ss_X.transform(X_test)), y_test)  
 
 
+	#############################
+	## Sample predictions
+	#############################
+
+	## Model functions
+	model_pred_f = {'Baseline\n(Majority rule classifier)':lambda x: np.zeros(len(x)), 
+					'Logistic Regression':lambda x: clf_lr.predict_proba(ss_X.transform(x))[:,1], 
+					'Logistic Regression\n(w/ interactions)':lambda x: clf_lri.predict_proba(pf_int.transform(ss_X.transform(x)))[:,1], 
+					'Decision Tree':lambda x: clf_dt.predict_proba(x)[:,1], 
+					'Gradient Boosting':lambda x: clf_gbm.predict_proba(x)[:,1] 
+					}
+	
+	## Input vector using 2016 rainfall and flow data at each location
+	pred_X_loc = []
+	# Step through locations
+	for loc in d_rf_bact.LocationID.unique():
+		df = pd.DataFrame(np.zeros([len(hrs_2016), len(IVs)]), columns = IVs)
+		if 'LocationID_'+loc in IVs:
+			df['LocationID_'+loc] = 1
+		lt = d_rf_bact[d_rf_bact.LocationID==loc].LocationTypeID.unique()[0]
+		if 'LocationTypeID_'+lt in IVs:
+			df['LocationTypeID_'+lt] = 1
+		wb = d_rf_bact[d_rf_bact.LocationID==loc].WaterBodyID.unique()[0]
+		if 'WaterBodyID_'+wb in IVs:
+			df['WaterBodyID_'+wb] = 1
+		wt = d_rf_bact[d_rf_bact.LocationID==loc].WaterType.unique()[0]
+		if 'WaterType_'+wt in IVs:
+			df['WaterType_'+wt] = 1
+		## Load hourly flow data
+		for col in ['flow_alewife_current', 'flow_alewife_deriv', 'flow_aberjona_current', 'flow_aberjona_deriv']:
+			df[col] = df_2016[col].values
+		for i in range(len(precip_ts)-1):
+			col = 'precip_'+str(precip_ts[i])+'_'+str(precip_ts[i+1])
+			df[col] = df_2016[col].values
+		## Add this location's data to set
+		df['LocationID'] = loc
+		df['DateHour'] = df_2016.DateHour.values
+		pred_X_loc += [df]
+
+	pred_X = pd.concat(pred_X_loc)
+	pred_X.to_csv('test_'+standard+'_2016_prediction_X.csv')
+	
+	## Model predict values
+	model_pred_y = {}
+	for model in model_pred_f:
+		p_y = model_pred_f[model](pred_X[IVs])
+		model_pred_y[model] = pd.DataFrame(data={'DateHour':pred_X['DateHour'], 'exceedence_probability':p_y, 'LocationID':pred_X['LocationID'].values},)
+		## Output probability of exceedence
+		model_pred_y[model].to_csv('test_'+standard+'_2016_prediction_Y_'+model.replace('\n','_').replace('/','')+'.csv', index=False)
+	
 
 	#############################
-	## Summary plot
+	## Summary plots
 	#############################
+
+	## Predictions
+	for model in model_pred_f:
+		model_pred_y[model].index = model_pred_y[model].DateHour
+		fig, axs = plt.subplots(len(model_pred_y[model].LocationID.unique()), 1, figsize=(4, 13), sharex='all', sharey='all')
+		for (loc, group), ax in zip(model_pred_y[model].groupby('LocationID')['exceedence_probability'], axs.flatten()):
+			group.plot(kind='line', ax=ax, title=loc, lw=0.5)
+		
+		plt.tight_layout()
+		axs[0].set_ylim(0, 1)
+		plt.savefig('test_'+standard+'_2016_prediction_Y_'+model.replace('\n','_').replace('/','')+'.png', 
+			  dpi=300, bbox_inches='tight')
+
+	plt.close('all')
 
 	## Accuracy comparison
 	plt.figure()
@@ -335,16 +417,6 @@ for standard in standard_limits:
 
 
 
-#############################
-## Questions
-#############################
-
-"""
-1. What factors are available at prediction time?  Are any other measurements like turbidity or pH available?
-2. What are the LocationTypeID levels?
-3. Is it ok to focus on predicting ECOLI measurements only?
-4. I get an error at this link: https://www.dropbox.com/s/akbcbtynztuehbi/myrwa-recflag-2015.html?dl=0
-"""
 
 #############################
 ## Thoughts
@@ -360,40 +432,6 @@ for standard in standard_limits:
 #############################
 
 """
-* Limits:
-
-Location Type	Parameter	Boating (#/100mL)	Swimming (#/100mL)
-Saline	ENT	350	104
-Fresh	ECOLI	1260	235
-
-* Relevant measure
-
-Upper Mystic Lake, Shannon Beach  (UPLSHBC):  ENT only, because this is DCR practice at this site (see DCRBCH).
-
-Mystic River, Blessing of the Bay (MYRBOBDOCK):  BOTH ENT and ECOLI, because of history of testing at this site. 
-
-Alewife Brook (ALB006) (in 2016 only):  BOTH ENT and ECOLI because of history of testing at this site. 
-
-* Relevant standard
-
-Wedge Pond -      Swimming
-Shannon Beach - Swimming
-Wright's Pond -    Swimming
-Mystic River -       Boating
-Alewife -               Boating
-Malden R.             Boating
-
-* XXX LocationTypeIDs defined in table 
-
-* Nathan in prior work done by Durant's group developing a prediction model for bacteria - they also included a delay factor in their model.
-E.G. in some areas like Shannon Beach , it may be the case that any water quality problems that emerge at the site will not be until 6 hours later when pollutants have had time to move downstream. 
-
-- (skip - doesn't change histogram much, paper said it was marginal, won't affect tree-based models) Log transform the continuous measurements, adding +1 inch to rainfall
-- XXXReduce correlation between rainfall variables by subtracting intervening time ranges
-
-* XXX No need to include wet/dry - overlaps with precip
-
-* XXX Drop flag type as predictor, and filter on it
 
 * Use Patsy for custom interacted variable
 """
