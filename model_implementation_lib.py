@@ -15,7 +15,7 @@ plt.ion()
 ## Load training data
 #############################
 
-def load_data(f_d_rf, f_d_mwra_base, f_d_dcr, f_d_logan, f_d_d_aberjona, f_d_h_alewife, f_l_locationtype):
+def load_data(f_d_rf, f_d_mwra_base, f_d_dcr, f_d_logan, f_d_d_aberjona, f_d_h_alewife, f_l_locationtype, f_d_model_list):
 	"""
 	Load relevant datasets given filenames specified as input
 	"""
@@ -42,7 +42,10 @@ def load_data(f_d_rf, f_d_mwra_base, f_d_dcr, f_d_logan, f_d_d_aberjona, f_d_h_a
 	## Lookup tables
 	l_locationtype = pd.read_table(f_l_locationtype, sep='\t', index_col = 'ID')
 	
-	return d_rf, d_mwra_base, d_dcr, d_logan, d_d_aberjona, d_h_alewife, l_locationtype
+	## Model 
+	d_model_list = pd.read_excel(f_d_model_list)
+	
+	return d_rf, d_mwra_base, d_dcr, d_logan, d_d_aberjona, d_h_alewife, l_locationtype, d_model_list
 
 #############################
 ## Transform data
