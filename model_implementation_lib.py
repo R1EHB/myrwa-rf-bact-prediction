@@ -1,3 +1,4 @@
+import pickle
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
@@ -268,7 +269,7 @@ def train_model(X_train, y_train, Cs = 10, n_jobs = 4, cv = 7, class_weight=None
 
 	ss_X = StandardScaler().fit(X_train)
 
-	clf_lr = LogisticRegressionCV(Cs=10, n_jobs=4, cv=7).fit(ss_X.transform(X_train), y_train)
+	clf_lr = LogisticRegressionCV(Cs=10, n_jobs=4, cv=7, class_weight=class_weight).fit(ss_X.transform(X_train), y_train)
 
 	### With interactions
 	#pf_int = PolynomialFeatures(degree=2)
@@ -291,12 +292,16 @@ def auc_calc(model, ytest, xtest):
 		return auc(fpr, tpr), fpr, tpr
 
 class bacteria_model():
-	def __init__(self, name, model, ss_X, X_all, y_all, X_train, X_test, y_train, y_test, IVs, 
+	"""
+	"""
+	
+	def __init__(self, name, X_all, y_all, X_train, X_test, y_train, y_test, IVs, 
 			  standard, CharacteristicID, Unit,
-			  DV = 'ResultValue', precip_ts = [0,12,24,48,72,96,120]):
+			  DV = 'ResultValue', precip_ts = [0,12,24,48,72,96,120], 
+			  model_Cs = 10, model_n_jobs = 4, model_cv = 7, model_class_weight=None):
 		self.name = name
-		self.model = model
-		self.standardizer = ss_X
+		self.model = None
+		self.standardizer = None
 		self.X_all = X_all
 		self.y_all = y_all
 		self.X_train = X_train
@@ -309,9 +314,17 @@ class bacteria_model():
 		self.Unit = Unit
 		self.DV = DV
 		self.precip_ts = precip_ts
+		self.Cs = model_Cs
+		self.n_jobs = model_n_jobs
+		self.cv = model_cv
+		self.class_weight = model_class_weight
 		
 		## Train model with all data by default
-		self.retrain_model(X_all, y_all)
+		self.train_model(X_all, y_all, 
+				   Cs = self.Cs, n_jobs = self.n_jobs, cv = self.cv, class_weight=self.class_weight)
+	
+	def train_model(self, X, Y, **kwargs):
+		self.standardizer, self.model = train_model(X, Y, **kwargs)
 	
 	def retrain_model(self, X, Y):
 		return self.model.fit(X, Y)
@@ -332,6 +345,8 @@ class bacteria_model():
 		
 		return self.auc
 
+def load_model(f):
+	return pickle.load(f)
 
 
 """

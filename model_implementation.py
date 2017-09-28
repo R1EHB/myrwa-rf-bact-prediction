@@ -28,15 +28,6 @@ col_cat_dummies = prepare_data(
 	l_locationtype = l_locationtype, col_cat = col_cat
 	)
 
-result_db_f, IVs = engineer_features(
-	result_db = d_combined, 
-	CharacteristicIDs = ['ECOLI', 'ENT'],
-	Unit = 'MPN/100ml',
-	flow_dfs = flow_dfs,
-	col_cat_dummies = col_cat_dummies,
-	d_logan = d_logan,
-	)
-
 df_sim_flow_rainfall = gen_flow_rainfall('2016-01-01 00:00:00', '2016-12-31 00:00:00', flow_dfs, d_logan['prcp_in'],)
 
 #############################
@@ -44,18 +35,41 @@ df_sim_flow_rainfall = gen_flow_rainfall('2016-01-01 00:00:00', '2016-12-31 00:0
 #############################
 
 standard_limits = {
-	'boating':{'ECOLI':1260,'ENT':350},
-	'swimming':{'ECOLI':235,'ENT':104},
+	'Boating':{'ECOLI':1260,'ENT':350},
+	'Swimming':{'ECOLI':235,'ENT':104},
 	}
 
-X_all, y_all, X_train, X_test, y_train, y_test, baseline = gen_train_test(result_db_f, standard_limits['boating'], IVs)
+model_dic = {}
+for model_i in range(len(d_model_list)):
+	model_spec = d_model_list.iloc[model_i]
+	
+	result_db_f, IVs = engineer_features(
+		result_db = d_combined, 
+		CharacteristicIDs = [model_spec.CharacteristicID],
+		Unit = 'MPN/100ml',
+		flow_dfs = flow_dfs,
+		col_cat_dummies = col_cat_dummies,
+		d_logan = d_logan,
+		)
 
-## NOTE: test with class balancing
-ss_X, clf_lr = train_model(X_train, y_train)
+	sel = result_db_f.LocationID.isin(model_spec['LocationID(s)'].split( ' + '))
+	X_all, y_all, X_train, X_test, y_train, y_test, baseline = gen_train_test(
+									result_db_f[sel], 
+									{model_spec.CharacteristicID: standard_limits[model_spec.Standard][model_spec.CharacteristicID]}, 
+									IVs)
 
-## Save model
-my_model = bacteria_model('test', clf_lr, ss_X, X_all, y_all, X_train, X_test, y_train, y_test, IVs, 'boating', '', 'MPN/100ml')
-
+	## Save model
+	model_name = '_'.join(model_spec.values)
+	model_dic[model_name] = bacteria_model(
+		model_spec, 
+		X_all, y_all, X_train, X_test, y_train, y_test, 
+		IVs, model_spec.Standard, model_spec.CharacteristicID, 'MPN/100ml')
+	with open(model_name+'.p', 'w') as f:
+		pickle.dump(model_dic[model_name], f)
+	
+	print model_name
+	print 'AUC: ', model_dic[model_name].get_auc()[0], '\n'
+	
 
 #############################
 ## Apply model
