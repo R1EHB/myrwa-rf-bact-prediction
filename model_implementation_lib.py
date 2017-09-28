@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 
+from scipy.interpolate import interp1d
+from scipy.special import logit, expit
+
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import Imputer
@@ -289,7 +292,7 @@ def train_model(X_train, y_train, Cs = 10, n_jobs = 4, cv = 7, class_weight=None
 
 def auc_calc(model, ytest, xtest):
 		fpr, tpr, thresholds = roc_curve(ytest, model.predict_proba(xtest)[:, 1])
-		return auc(fpr, tpr), fpr, tpr
+		return auc(fpr, tpr), fpr, tpr, thresholds
 
 class bacteria_model():
 	"""
@@ -298,7 +301,8 @@ class bacteria_model():
 	def __init__(self, name, X_all, y_all, X_train, X_test, y_train, y_test, IVs, 
 			  standard, CharacteristicID, Unit,
 			  DV = 'ResultValue', precip_ts = [0,12,24,48,72,96,120], 
-			  model_Cs = 10, model_n_jobs = 4, model_cv = 7, model_class_weight=None):
+			  model_Cs = 10, model_n_jobs = 4, model_cv = 7, model_class_weight=None,
+			  sensitivity = None):
 		self.name = name
 		self.model = None
 		self.standardizer = None
@@ -319,18 +323,52 @@ class bacteria_model():
 		self.cv = model_cv
 		self.class_weight = model_class_weight
 		
+		self.sensitivity = sensitivity
+		self.threshold = 0.5
+		
 		## Train model with all data by default
 		self.train_model(X_all, y_all, 
 				   Cs = self.Cs, n_jobs = self.n_jobs, cv = self.cv, class_weight=self.class_weight)
 	
 	def train_model(self, X, Y, **kwargs):
 		self.standardizer, self.model = train_model(X, Y, **kwargs)
+		if self.sensitivity is not None:
+			self.pick_threshold(self.sensitivity)
 	
 	def retrain_model(self, X, Y):
+		"""
+		Retrains in place and returns the model property of the object, but does NOT change the threshold property.
+		"""
 		return self.model.fit(X, Y)
 	
-	def predict(self, X):
-		return self.model.predict(self.standardizer.transform(X))
+	def predict(self, X, threshold=None):
+		"""
+		Predict a binary outcome from the logistic regression model for some data *X* with a probability threshold *threshold*
+		
+		If a threshold is not specified, the object's threshold parameter (e.g. as set by the pick_threshold method) is used.
+		"""
+		if threshold is None:
+			threshold = self.threshold
+		return (self.model.predict_proba(self.standardizer.transform(X)) > threshold).astype(int)[:,1]
+	
+	def pick_threshold(self, sensitivity):
+		"""
+		Use the ROC curve to pick a threshold that aligns to the specified *sensitivity* (true positive rate)
+		
+		Uses linear interpolation to smooth the ROC curve
+		"""
+		## Retrain on testing data if not already done
+		if 'auc' not in self.__dict__:
+			self.get_auc()
+		
+		auc, fpr, tpr, logit_thresholds = self.auc
+		
+		self.fpr_interp = np.linspace(0,1,10000)
+		self.tpr_interp = interp1d(fpr, tpr, kind='linear', fill_value='extrapolate')(self.fpr_interp)
+		self.logit_thresholds_interp = interp1d(fpr, logit_thresholds, kind='linear', fill_value='extrapolate')(self.fpr_interp)
+		
+		nearest = np.abs(self.tpr_interp - sensitivity).argmin()
+		self.threshold = expit(self.logit_thresholds_interp[nearest])
 	
 	def get_auc(self):
 		"""
