@@ -4,16 +4,19 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from scipy.interpolate import interp1d
+from scipy import interp
 from scipy.special import logit, expit
 
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import Imputer
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import PolynomialFeatures
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_curve, auc, accuracy_score, confusion_matrix
 
 plt.ion()
+
+precip_ts = [0,12,24,48,72,96,120]
 
 #############################
 ## Load training data
@@ -160,7 +163,7 @@ def gen_flow_rainfall(start_time, end_time, flow_dfs, rain_series, freq = (4, 'h
 	for i in range(len(precip_ts)-1):
 		df_sim['precip_'+str(precip_ts[i])+'_'+str(precip_ts[i+1])] = \
 			df_sim['DateHour'].apply(lambda x: sum_rain(x, [precip_ts[i], precip_ts[i+1]], rain_series))
-	return df_sim
+	return df_sim, hrs_sim
 
 
 ## Join rainfall data on different timescales
@@ -302,7 +305,7 @@ class bacteria_model():
 			  standard, CharacteristicID, Unit,
 			  DV = 'ResultValue', precip_ts = [0,12,24,48,72,96,120], 
 			  model_Cs = 10, model_n_jobs = 4, model_cv = 7, model_class_weight=None,
-			  sensitivity = None):
+			  sensitivity = None, locations = None):
 		self.name = name
 		self.model = None
 		self.standardizer = None
@@ -325,13 +328,16 @@ class bacteria_model():
 		
 		self.sensitivity = sensitivity
 		self.threshold = 0.5
+		self.locations = locations
 		
 		## Train model with all data by default
 		self.train_model(X_all, y_all, 
 				   Cs = self.Cs, n_jobs = self.n_jobs, cv = self.cv, class_weight=self.class_weight)
 	
-	def train_model(self, X, Y, **kwargs):
+	def train_model(self, X, Y, sensitivity = None, **kwargs):
 		self.standardizer, self.model = train_model(X, Y, **kwargs)
+		if sensitivity is not None:
+			self.sensitivity = sensitivity
 		if self.sensitivity is not None:
 			self.pick_threshold(self.sensitivity)
 	
@@ -361,7 +367,10 @@ class bacteria_model():
 		if 'auc' not in self.__dict__:
 			self.get_auc()
 		
-		auc, fpr, tpr, logit_thresholds = self.auc
+		if self.sensitivity != sensitivity:
+			self.sensitivity = sensitivity
+		
+		auc, fpr, tpr, logit_thresholds, std_auc, std_tpr = self.auc
 		
 		self.fpr_interp = np.linspace(0,1,10000)
 		self.tpr_interp = interp1d(fpr, tpr, kind='linear', fill_value='extrapolate')(self.fpr_interp)
@@ -370,166 +379,94 @@ class bacteria_model():
 		nearest = np.abs(self.tpr_interp - sensitivity).argmin()
 		self.threshold = expit(self.logit_thresholds_interp[nearest])
 	
-	def get_auc(self):
+	def get_auc(self, K=5):
 		"""
 		Get AUC on held out testing data
+		
+		Uses cross validation to construct predictions on the entire dataset as held out data
+		
+		Based on: http://scikit-learn.org/stable/auto_examples/model_selection/plot_roc_crossval.html
 		"""
-		if 'auc' not in self.__dict__:
-			## Retrain on testing data if not already done
-			if 'model_train_test' not in self.__dict__:
-				self.model_train_test = self.retrain_model(self.X_train, self.y_train)
-			
-			self.auc = auc_calc(self.model_train_test, self.y_test, self.X_test)
+		cv = StratifiedKFold(n_splits = K)
+		tprs = []
+		aucs = []
+		threshs = []
+		mean_fpr = np.linspace(0, 1, 10000)
+		for train, test in cv.split(self.X_all, self.y_all):
+			probas_ = self.retrain_model(self.X_all[train], self.y_all[train]).predict_proba(self.X_all[test])
+			fpr, tpr, thresholds = roc_curve(self.y_all[test], probas_[:, 1])
+			tprs.append(interp(mean_fpr, fpr, tpr))
+			tprs[-1][0] = 0.0
+			roc_auc = auc(fpr, tpr)
+			aucs.append(roc_auc)
+			threshs.append(interp(mean_fpr, fpr, thresholds))
+
+		
+		mean_tpr = np.mean(tprs, axis=0)
+		mean_tpr[-1] = 1.0
+		mean_auc = auc(mean_fpr, mean_tpr)
+		std_auc = np.std(aucs)
+		std_tpr = np.std(tprs, axis=0)
+
+		self.auc = mean_auc, mean_fpr, mean_tpr, np.mean(threshs, axis=0), std_auc, std_tpr
 		
 		return self.auc
+	
+	def summarize_performance(self, Nsim=100):
+		"""
+		Print out a summary of performance criteria
+		"""
+		orig_sensitivity = self.sensitivity
+		self.pick_threshold(orig_sensitivity)
+		self.get_auc()
+		
+		print "Model configured for target specificity of: ", self.sensitivity
+		print "...using optimized threshold of: ",self.threshold
+		
+		print "Test set AUC: ", self.auc[0]
+		
+		print "Test set Accuracy: ", accuracy_score(self.y_test, self.predict(self.X_test))
+		
+		confmat = confusion_matrix(self.y_test, self.predict(self.X_test))
+		print "Test set Sensitivity (TPR): ", confmat[1][1] / float((y_all == 1).sum())
+		print "Test set Specificity (TNR): ", confmat[0][0] / float((y_all == 0).sum())
+		
+		## Generate sensitivity / threshold plot
+		sens = 1 - np.logspace(-3, -0.0001, Nsim)
+		threshs = np.zeros(Nsim)
+		tpr1 = np.zeros(Nsim)
+		for i, s in enumerate(sens):
+			self.pick_threshold(s)
+			threshs[i] = self.threshold
+			tpr1[i] = confusion_matrix(self.y_all, self.predict(self.X_all))[1][1] / float(sum(self.y_all))
+
+		plt.figure()
+		plt.plot(sens, tpr1, label='TPR', marker='o')
+		plt.plot(sens, threshs, label='Threshold', marker='o')
+		plt.plot([0, 1], [0,1], color='.5', zorder=-2, label='Perfect calibration')
+		plt.xlabel('Sensitivity (target TPR)')
+		plt.title('Sensitivity response (applied to train+test data)')
+		plt.legend()
+		
+		
+		## Reset threshold
+		self.pick_threshold(orig_sensitivity)
+		
+		
+		## ROC curve
+		plt.figure()
+		plt.plot(self.auc[1], self.auc[2])
+
+		plt.axis([0,1,0,1])
+		plt.plot([0, 1], [0,1], color='.5', zorder=-2, ls='dashed')
+		plt.xlabel('False Positive Rate')
+		plt.ylabel('True Positive Rate')
+		plt.title('Performance on held out testing set')
+		plt.legend()
+
+
+
 
 def load_model(f):
 	return pickle.load(f)
 
-
-"""
-#############################
-## Sample predictions
-#############################
-
-## Model functions
-model_pred_f = {'Baseline\n(Majority rule classifier)':lambda x: np.zeros(len(x)), 
-				'Logistic Regression':lambda x: clf_lr.predict_proba(ss_X.transform(x))[:,1], 
-				'Logistic Regression\n(w/ interactions)':lambda x: clf_lri.predict_proba(pf_int.transform(ss_X.transform(x)))[:,1], 
-				'Decision Tree':lambda x: clf_dt.predict_proba(x)[:,1], 
-				'Gradient Boosting':lambda x: clf_gbm.predict_proba(x)[:,1] 
-				}
-
-## Input vector using 2016 rainfall and flow data at each location
-pred_X_loc = []
-# Step through locations
-for loc in result_db_f.LocationID.unique():
-	df = pd.DataFrame(np.zeros([len(hrs_2016), len(IVs)]), columns = IVs)
-	if 'LocationID_'+loc in IVs:
-		df['LocationID_'+loc] = 1
-	lt = result_db_f[result_db_f.LocationID==loc].LocationTypeID.unique()[0]
-	if 'LocationTypeID_'+lt in IVs:
-		df['LocationTypeID_'+lt] = 1
-	wb = result_db_f[result_db_f.LocationID==loc].WaterBodyID.unique()[0]
-	if 'WaterBodyID_'+wb in IVs:
-		df['WaterBodyID_'+wb] = 1
-	wt = result_db_f[result_db_f.LocationID==loc].WaterType.unique()[0]
-	if 'WaterType_'+wt in IVs:
-		df['WaterType_'+wt] = 1
-	## Load hourly flow data
-	for col in ['flow_alewife_current', 'flow_alewife_deriv', 'flow_aberjona_current', 'flow_aberjona_deriv']:
-		df[col] = df_2016[col].values
-	for i in range(len(precip_ts)-1):
-		col = 'precip_'+str(precip_ts[i])+'_'+str(precip_ts[i+1])
-		df[col] = df_2016[col].values
-	## Add this location's data to set
-	df['LocationID'] = loc
-	df['DateHour'] = df_2016.DateHour.values
-	pred_X_loc += [df]
-
-pred_X = pd.concat(pred_X_loc)
-pred_X.to_csv('test_'+standard+'_2016_prediction_X.csv')
-
-## Model predict values
-model_pred_y = {}
-for model in model_pred_f:
-	p_y = model_pred_f[model](pred_X[IVs])
-	model_pred_y[model] = pd.DataFrame(data={'DateHour':pred_X['DateHour'], 'exceedence_probability':p_y, 'LocationID':pred_X['LocationID'].values},)
-	## Output probability of exceedence
-	model_pred_y[model].to_csv('test_'+standard+'_2016_prediction_Y_'+model.replace('\n','_').replace('/','')+'.csv', index=False)
-
-
-#############################
-## Summary plots
-#############################
-
-## Predictions
-for model in model_pred_f:
-	model_pred_y[model].index = model_pred_y[model].DateHour
-	fig, axs = plt.subplots(len(model_pred_y[model].LocationID.unique()), 1, figsize=(4, 13), sharex='all', sharey='all')
-	for (loc, group), ax in zip(model_pred_y[model].groupby('LocationID')['exceedence_probability'], axs.flatten()):
-		group.plot(kind='line', ax=ax, title=loc, lw=0.5)
-	
-	plt.tight_layout()
-	axs[0].set_ylim(0, 1)
-	plt.savefig('test_'+standard+'_2016_prediction_Y_'+model.replace('\n','_').replace('/','')+'.png', 
-			dpi=300, bbox_inches='tight')
-
-plt.close('all')
-
-## Accuracy comparison
-plt.figure()
-model_scores = {'Baseline\n(Majority rule classifier)':baseline * 100, 
-				'Logistic Regression':clf_lr.score(ss_X.transform(X_test), y_test) * 100, 
-				'Logistic Regression\n(w/ interactions)':clf_lri.score(pf_int.transform(ss_X.transform(X_test)), y_test) * 100, 
-				'Decision Tree':clf_dt.score(X_test, y_test) * 100, 
-				'Gradient Boosting':clf_gbm.score(X_test, y_test) * 100 
-				}
-plt.barh(np.arange(len(model_scores)), model_scores.values())
-plt.yticks(np.arange(len(model_scores)), model_scores.keys())
-plt.gca().set_xlim(50,100)
-plt.xlabel('Accuracy score (%)')
-plt.title('Performance on held out testing set')
-plt.savefig('test_'+standard+'_model_accuracy_comparison.png', bbox_inches='tight')
-
-## AUC comparison
-from sklearn.metrics import roc_curve, auc
-
-def auc_calc(model, ytest=y_test, xtest=X_test):
-	fpr, tpr, thresholds = roc_curve(ytest, model.predict_proba(xtest)[:, 1])
-	return auc(fpr, tpr), fpr, tpr
-
-model_scores_auc = {'Baseline\n(Majority rule classifier)':.5, 
-				'Logistic Regression':auc_calc(clf_lr, xtest=ss_X.transform(X_test))[0], 
-				'Logistic Regression\n(w/ interactions)':auc_calc(clf_lri, xtest=pf_int.transform(ss_X.transform(X_test)))[0], 
-				'Decision Tree':auc_calc(clf_dt)[0], 
-				'Gradient Boosting':auc_calc(clf_gbm)[0] 
-				}
-plt.figure()
-plt.barh(np.arange(len(model_scores_auc)), model_scores_auc.values())
-plt.yticks(np.arange(len(model_scores_auc)), model_scores_auc.keys())
-plt.gca().set_xlim(.5, 1)
-plt.xlabel('AUC score')
-plt.title('Performance on held out testing set')
-plt.savefig('test_'+standard+'_model_auc_comparison.png', bbox_inches='tight')
-
-
-## ROC curve
-model_scores_pr = {'Baseline\n(Majority rule classifier)':([0,1],[0,1]), 
-				'Logistic Regression':auc_calc(clf_lr, xtest=ss_X.transform(X_test))[1:], 
-				'Logistic Regression\n(w/ interactions)':auc_calc(clf_lri, xtest=pf_int.transform(ss_X.transform(X_test)))[1:], 
-				'Decision Tree':auc_calc(clf_dt)[1:], 
-				'Gradient Boosting':auc_calc(clf_gbm)[1:] 
-				}
-plt.figure()
-for model in model_scores_pr:
-	plt.plot(*model_scores_pr[model], label=model)
-
-plt.axis([0,1,0,1])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('Performance on held out testing set')
-plt.legend()
-plt.savefig('test_'+standard+'_model_roc_comparison.png', bbox_inches='tight')
-
-
-## Feature importance / coefficients
-coefs = {
-				'Logistic Regression':pd.Series(clf_lr.coef_[0], name='coefficient', index=IVs), 
-				'Logistic Regression\n(w/ interactions)':pd.Series(clf_lri.coef_[0], index=IVs_int, name='coefficient'), 
-				'Gradient Boosting': pd.Series(clf_gbm.best_estimator_.feature_importances_, name='feature importance', index=IVs)
-				}
-
-for model in coefs:
-	ao = np.argsort(coefs[model].values)
-	ao = np.array(list(ao[:10]) + list(ao[-10:]))
-	
-	plt.figure()
-	plt.barh(np.arange(len(ao)), coefs[model].values[ao])
-	plt.yticks(np.arange(len(ao)), coefs[model].index[ao])
-	plt.xlabel(coefs[model].name.capitalize()+' value')
-	plt.title(model)
-	plt.savefig('test_'+standard+'_'+model.replace(' ','').replace('\n','').replace('/','').replace('(','').replace(')','')+'_coef.png', bbox_inches='tight')
-
-
-"""
